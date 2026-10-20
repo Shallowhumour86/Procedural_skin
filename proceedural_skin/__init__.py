@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Proceedural skin",
     "author": "Proceedural skin contributors",
-    "version": (0, 1, 0),
+    "version": (0, 2, 0),
     "blender": (4, 4, 1),
     "location": "View3D > Sidebar > Proceedural skin",
     "description": "Create and apply the initial procedural skin material",
@@ -9,6 +9,14 @@ bl_info = {
 }
 
 import bpy
+
+
+FACTOR_CONTROLS = (
+    ("Intensity", "Final blend"),
+    ("Tone", "melanin"),
+    ("Flush", "Base skin"),
+    ("Blush", "Blood"),
+)
 
 
 def hex_color(value):
@@ -108,6 +116,22 @@ class PROCEEDURALSKIN_PT_panel(bpy.types.Panel):
         layout.operator("proceedural_skin.apply", icon='MATERIAL')
         layout.label(text="Applies to all faces of the active mesh.")
         layout.label(text="View in Material Preview or Rendered mode.")
+        obj = context.active_object
+        material = obj.active_material if obj and obj.type == 'MESH' else None
+        if (material is None or material.get("proceedural_skin_version") != 1
+                or not material.use_nodes or material.node_tree is None):
+            layout.label(text="Apply skin_Main to show skin controls.")
+            return
+        controls = layout.column(align=True)
+        controls.enabled = material.is_editable and material.node_tree.is_editable
+        for label, node_name in FACTOR_CONTROLS:
+            node = material.node_tree.nodes.get(node_name)
+            if node is None or node.bl_idname != 'ShaderNodeMix' or node.data_type != 'RGBA':
+                controls.label(text=f"Missing color Mix node: {node_name}", icon='ERROR')
+                continue
+            row = controls.row()
+            row.enabled = not node.inputs[0].is_linked
+            row.prop(node.inputs[0], "default_value", text=label, slider=True)
 
 
 classes = (PROCEEDURALSKIN_OT_apply, PROCEEDURALSKIN_PT_panel)

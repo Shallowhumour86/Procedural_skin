@@ -35,6 +35,38 @@ expected = [(nodes['Blood'].outputs[2],nodes['Base skin'].inputs[7]),
             (shader.outputs[0],next(n for n in nodes if n.type=='OUTPUT_MATERIAL').inputs['Surface'])]
 assert actual == {(a.node.name,a.identifier,b.node.name,b.identifier) for a,b in expected}
 assert all(p.material_index == obj.active_material_index for p in obj.data.polygons)
+# Capture the panel's actual RNA bindings and edit those Blender sockets.
+class CaptureLayout:
+    def __init__(self):
+        self.bindings = []
+    def label(self, **kwargs):
+        pass
+    def operator(self, *args, **kwargs):
+        pass
+    def column(self, **kwargs):
+        return self
+    def row(self):
+        return self
+    def prop(self, data, property_name, **kwargs):
+        assert property_name == 'default_value' and kwargs['slider']
+        self.bindings.append((kwargs['text'], data))
+
+from types import SimpleNamespace
+layout = CaptureLayout()
+addon.PROCEEDURALSKIN_PT_panel.draw(SimpleNamespace(layout=layout), bpy.context)
+assert [label for label, socket in layout.bindings] == ['Intensity', 'Tone', 'Flush', 'Blush']
+for (label, socket), node_name, value in zip(layout.bindings,
+        ['Final blend', 'melanin', 'Base skin', 'Blood'], [.15, .75, .35, .9]):
+    assert socket == nodes[node_name].inputs[0]
+    socket.default_value = value
+    assert abs(nodes[node_name].inputs[0].default_value - value) < 1e-6
+    assert socket.bl_rna.properties['default_value'].hard_min == 0
+    assert socket.bl_rna.properties['default_value'].hard_max == 1
+# Reapply must preserve all slider edits.
+bpy.ops.proceedural_skin.apply()
+for node_name, value in zip(['Final blend', 'melanin', 'Base skin', 'Blood'], [.15, .75, .35, .9]):
+    assert abs(nodes[node_name].inputs[0].default_value - value) < 1e-6
+
 count = len(bpy.data.materials)
 bpy.ops.proceedural_skin.apply()
 assert obj.active_material == mat and len(obj.material_slots) == 1
@@ -55,5 +87,12 @@ assert tuple(user.diffuse_color)[:3] != (0,0,0)
 assert user.get('proceedural_skin_version') is None
 bpy.context.view_layer.objects.active = None
 assert not addon.PROCEEDURALSKIN_OT_apply.poll(bpy.context)
+# Missing/renamed nodes and no active object must draw without exceptions.
+current = obj.active_material.node_tree.nodes.get('Blood')
+obj.active_material.node_tree.nodes.remove(current)
+bpy.context.view_layer.objects.active = obj
+addon.PROCEEDURALSKIN_PT_panel.draw(SimpleNamespace(layout=CaptureLayout()), bpy.context)
+bpy.context.view_layer.objects.active = None
+addon.PROCEEDURALSKIN_PT_panel.draw(SimpleNamespace(layout=CaptureLayout()), bpy.context)
 addon.unregister()
-print('PASS: registration, shader values and links, assignment, reuse, shared mesh isolation, name collision, poll, unregister')
+print('PASS: registration, shader values and links, assignment, reuse, shared mesh isolation, name collision, four slider bindings and edits, preserved values, missing nodes, poll, unregister')
