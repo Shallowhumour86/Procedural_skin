@@ -1,14 +1,14 @@
-# Proceedural skin — 0.5.0
+# Proceedural skin — 0.6.0
 
 A Blender 4.4.1 add-on with material creation and live skin factor controls.
 
 ## Install and use
 
 1. In Blender, open **Edit → Preferences → Add-ons**, open the dropdown menu at the top right, and choose **Install from Disk…**.
-2. Select `proceedural_skin-0.5.0.zip` and enable **Proceedural skin** if necessary.
+2. Select `proceedural_skin-0.6.0.zip` and enable **Proceedural skin** if necessary.
 3. Select a mesh in **Object Mode**. In the 3D Viewport press **N** and open the **Proceedural skin** tab.
 4. Click **Apply skin_Main**. Switch to **Material Preview** or **Rendered** shading.
-5. Adjust **Intensity**, **Tone**, **Flush**, **Perfusion**, and **Pores** in the same sidebar. Each slider runs from 0 to 1 and edits its Mix node factor directly.
+5. Adjust **Intensity**, **Tone**, **Flush**, **Perfusion**, and **Pores** in the same sidebar. The factor controls run from 0 to 1. Pores is now driven by the range node, so its manual factor control is disabled.
 
 | Slider | Node factor | Initial value |
 | --- | --- | --- |
@@ -16,7 +16,7 @@ A Blender 4.4.1 add-on with material creation and live skin factor controls.
 | Tone | melanin | 0.4 |
 | Flush | Base skin | 0.2 |
 | Perfusion | Blood | 0.5 |
-| Pores | Pores strength (Float Mix) | 0.5 |
+| Pores | Pores strength (Float Mix) | Driven by Pores range |
 
 Existing pore graphs are upgraded to **melanin → Pores A** and **Final blend → Pores B** when you click **Apply skin_Main**.
 
@@ -38,9 +38,9 @@ The slider reads the actual noise scale, so Shader Editor changes are reflected 
 
 The pore Noise Texture uses Scale 10,000, Detail 1, Roughness 1, Lacunarity 2 and Distortion 0. Its factor feeds a Map Range with Value 1 (overridden by the connected noise), From Min 0.5, From Max 0.8, To Min 1 and To Max 0 (inverted).
 
-The map drives input B of the Float Mix **Pores strength**, with A = 0. The **Pores** slider controls its factor, initially 0.5. Its result drives both the factor of the **Pores** color Mix (A: melanin / B: Final blend) and bump strength. Map Range also drives bump height; bump normal feeds the Principled normal input. Other new-node settings retain Blender defaults.
+The map drives both input B and Factor of the Float Mix **Pores strength**, with A = 0. The **Pores** slider is disabled because Factor is connected to Pores range. The existing connections to B and bump Height remain. Its result drives both the factor of the **Pores** color Mix (A: melanin / B: Final blend) and bump strength. Map Range also drives bump height; bump normal feeds the Principled normal input. Other new-node settings retain Blender defaults.
 
-After upgrading, select your existing skin object and click **Apply skin_Main** once to add the pore graph. Existing color factors are preserved. Reapplying preserves pore edits too. **Perfusion** is the renamed Blush control; it keeps the existing Blood factor.
+After upgrading, select your existing skin object and click **Apply skin_Main** once to upgrade the main pore graph and every registered skin group material. Existing color factors are preserved. Reapplying preserves pore edits too. **Perfusion** is the renamed Blush control; it keeps the existing Blood factor.
 
 Controls follow the active material and also work with skin materials saved by earlier versions. Changes in the Shader Editor appear in the sliders automatically. Objects using the same skin material share these adjustments. A factor driven by a node link is disabled in the panel.
 
@@ -57,3 +57,5 @@ Weight paints, skin regions, vessels, transition controls, and baking are future
 Run `blender --background --factory-startup --python-exit-code 1 --python tests/smoke.py` from this repository. This validates registration, exact node settings and connections, assignment, repeated application, shared mesh isolation, existing material preservation, all six slider bindings and value changes, inverse pore size mapping, half-step snapping, version upgrades, and missing-node handling. Checks have passed in Blender 4.3.2; exact Blender 4.4.1 validation is left for manual testing.
 
 Group validation: `blender --background --factory-startup --python-exit-code 1 --python tests/groups.py` verifies full main weights, empty groups, ten-group limit, independent materials, collapsible controls, reapplication, and save/reopen persistence.
+
+Version 0.6.0 validation checks the new Factor connection on the main material and all ten group materials, including migration from v0.5.0. As before, Apply assigns the main material to all faces; group materials remain available for manual face assignment.

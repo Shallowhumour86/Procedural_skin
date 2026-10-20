@@ -43,6 +43,7 @@ expected = [(nodes['Blood'].outputs[2],nodes['Base skin'].inputs[7]),
             (nodes['melanin'].outputs[2],nodes['Pores'].inputs[6]),
             (nodes['Pores noise'].outputs['Fac'],nodes['Pores range'].inputs['Value']),
             (nodes['Pores range'].outputs['Result'],nodes['Pores strength'].inputs[3]),
+            (nodes['Pores range'].outputs['Result'],nodes['Pores strength'].inputs[0]),
             (nodes['Pores strength'].outputs[0],nodes['Pores'].inputs[0]),
             (nodes['Pores'].outputs[2],shader.inputs['Base Color']),
             (nodes['Pores strength'].outputs[0],nodes['Pores bump'].inputs['Strength']),
@@ -127,12 +128,13 @@ for name in ['Pores noise','Pores range','Pores strength','Pores','Pores bump']:
 mat['proceedural_skin_version'] = 1
 mat.node_tree.links.new(nodes['Final blend'].outputs[2], shader.inputs['Base Color'])
 bpy.ops.proceedural_skin.apply()
-assert mat['proceedural_skin_version'] == 4 and len(nodes) == 11
+assert mat['proceedural_skin_version'] == 5 and len(nodes) == 11
 for name, value in zip(['Final blend','melanin','Base skin','Blood'], [.15,.75,.35,.9]):
     assert abs(nodes[name].inputs[0].default_value-value) < 1e-6
-# Zero Pores disables both the color interpolation and bump strength.
+# Linked Pores factor overrides its stored manual default.
 nodes['Pores strength'].inputs[0].default_value = 0
 assert nodes['Pores strength'].inputs[2].default_value == 0
+assert nodes['Pores strength'].inputs[0].is_linked
 count = len(bpy.data.materials)
 bpy.ops.proceedural_skin.apply()
 assert obj.active_material == mat and len(obj.material_slots) == 1

@@ -34,11 +34,25 @@ materials[0].node_tree.nodes['Blood'].inputs[0].default_value = .12
 materials[0].proceedural_skin_pores_size = 9
 assert main.proceedural_skin_pores_size == 4 and materials[1].proceedural_skin_pores_size == 4
 assert abs(materials[1].node_tree.nodes['Blood'].inputs[0].default_value - .73) < 1e-6
+# Simulate v0.5 materials; Apply must upgrade the main and all ten group graphs.
+for material in [main] + materials:
+    material['proceedural_skin_version'] = 4
+    tree = material.node_tree
+    for link in list(tree.nodes['Pores strength'].inputs[0].links):
+        tree.links.remove(link)
 # Reapplying with a group material active still targets the main material.
 obj.active_material_index = 1
 bpy.ops.proceedural_skin.apply()
 assert obj.active_material == main and len(obj.proceedural_skin_groups) == 10
 assert len(obj.vertex_groups) == 11
+for material in [main] + materials:
+    tree = material.node_tree
+    for socket_index in (0, 3):
+        links = tree.nodes['Pores strength'].inputs[socket_index].links
+        assert len(links) == 1
+        assert links[0].from_node == tree.nodes['Pores range']
+        assert links[0].from_socket == tree.nodes['Pores range'].outputs['Result']
+    assert material['proceedural_skin_version'] == 5
 
 class Layout:
     def __init__(self):
