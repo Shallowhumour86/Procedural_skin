@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Proceedural skin",
     "author": "Proceedural skin contributors",
-    "version": (0, 2, 0),
+    "version": (0, 3, 0),
     "blender": (4, 4, 1),
     "location": "View3D > Sidebar > Proceedural skin",
     "description": "Create and apply the initial procedural skin material",
@@ -15,7 +15,8 @@ FACTOR_CONTROLS = (
     ("Intensity", "Final blend"),
     ("Tone", "melanin"),
     ("Flush", "Base skin"),
-    ("Blush", "Blood"),
+    ("Perfusion", "Blood"),
+    ("Pores", "Pores strength"),
 )
 
 
@@ -26,10 +27,65 @@ def hex_color(value):
                  for c in channels) + (1.0,)
 
 
-def create_skin_material():
+def add_pore_nodes(material):
+    """Upgrade our original graph once, preserving existing color factors."""
+    if material.get("proceedural_skin_version") == 2:
+        return
+    nodes = material.node_tree.nodes
+    links = material.node_tree.links
+    final = nodes.get("Final blend")
+    melanin = nodes.get("melanin")
+    shader = next((n for n in nodes if n.type == 'BSDF_PRINCIPLED'), None)
+    if final is None or melanin is None or shader is None:
+        raise ValueError("Cannot add pores: Final blend, melanin or Principled BSDF is missing")
+    noise = nodes.new('ShaderNodeTexNoise')
+    noise.name = noise.label = 'Pores noise'
+    noise.location = (-900, -500)
+    for name, value in [('Scale', 10000), ('Detail', 1), ('Roughness', 1),
+                        ('Lacunarity', 2), ('Distortion', 0)]:
+        noise.inputs[name].default_value = value
+    mapping = nodes.new('ShaderNodeMapRange')
+    mapping.name = mapping.label = 'Pores range'
+    mapping.location = (-650, -500)
+    for name, value in [('Value', 1), ('From Min', .5), ('From Max', .8),
+                        ('To Min', 0), ('To Max', 1)]:
+        mapping.inputs[name].default_value = value
+    strength = nodes.new('ShaderNodeMix')
+    strength.name = strength.label = 'Pores strength'
+    strength.data_type = 'FLOAT'
+    strength.inputs[0].default_value = .5
+    strength.inputs[2].default_value = 0
+    strength.location = (-400, -400)
+    pores = nodes.new('ShaderNodeMix')
+    pores.name = pores.label = 'Pores'
+    pores.data_type = 'RGBA'
+    pores.blend_type = 'MIX'
+    pores.location = (-100, 260)
+    bump = nodes.new('ShaderNodeBump')
+    bump.name = bump.label = 'Pores bump'
+    bump.location = (-100, -250)
+    shader.location = (200, 260)
+    for n in nodes:
+        if n.type == 'OUTPUT_MATERIAL':
+            n.location = (560, 260)
+    links.new(noise.outputs['Fac'], mapping.inputs['Value'])
+    links.new(mapping.outputs['Result'], strength.inputs[3])
+    links.new(final.outputs[2], pores.inputs[6])
+    links.new(melanin.outputs[2], pores.inputs[7])
+    links.new(strength.outputs[0], pores.inputs[0])
+    links.new(pores.outputs[2], shader.inputs['Base Color'])
+    links.new(strength.outputs[0], bump.inputs['Strength'])
+    links.new(mapping.outputs['Result'], bump.inputs['Height'])
+    links.new(bump.outputs['Normal'], shader.inputs['Normal'])
+    material['proceedural_skin_version'] = 2
+
+
+def create_skin_material(material=None):
     # Reuse only our own material; never erase a user's same-named material.
-    material = bpy.data.materials.get("skin_Main")
-    if material is not None and material.get("proceedural_skin_version") == 1:
+    if material is None or material.get("proceedural_skin_version") not in (1, 2):
+        material = bpy.data.materials.get("skin_Main")
+    if material is not None and material.get("proceedural_skin_version") in (1, 2):
+        add_pore_nodes(material)
         return material
     material = bpy.data.materials.new("skin_Main")
     material.use_nodes = True
@@ -70,6 +126,7 @@ def create_skin_material():
     links.new(final.outputs[2], shader.inputs['Base Color'])
     links.new(shader.outputs['BSDF'], output.inputs['Surface'])
     material['proceedural_skin_version'] = 1
+    add_pore_nodes(material)
     return material
 
 
@@ -87,7 +144,11 @@ class PROCEEDURALSKIN_OT_apply(bpy.types.Operator):
 
     def execute(self, context):
         obj = context.active_object
-        material = create_skin_material()
+        try:
+            material = create_skin_material(obj.active_material)
+        except ValueError as error:
+            self.report({'ERROR'}, str(error))
+            return {'CANCELLED'}
         # Isolate shared geometry so other objects keep their material assignments.
         if obj.data.users > 1:
             obj.data = obj.data.copy()
@@ -118,7 +179,7 @@ class PROCEEDURALSKIN_PT_panel(bpy.types.Panel):
         layout.label(text="View in Material Preview or Rendered mode.")
         obj = context.active_object
         material = obj.active_material if obj and obj.type == 'MESH' else None
-        if (material is None or material.get("proceedural_skin_version") != 1
+        if (material is None or material.get("proceedural_skin_version") not in (1, 2)
                 or not material.use_nodes or material.node_tree is None):
             layout.label(text="Apply skin_Main to show skin controls.")
             return
@@ -126,8 +187,8 @@ class PROCEEDURALSKIN_PT_panel(bpy.types.Panel):
         controls.enabled = material.is_editable and material.node_tree.is_editable
         for label, node_name in FACTOR_CONTROLS:
             node = material.node_tree.nodes.get(node_name)
-            if node is None or node.bl_idname != 'ShaderNodeMix' or node.data_type != 'RGBA':
-                controls.label(text=f"Missing color Mix node: {node_name}", icon='ERROR')
+            if node is None or node.bl_idname != 'ShaderNodeMix' or node.data_type != ('FLOAT' if node_name == 'Pores strength' else 'RGBA'):
+                controls.label(text=f"Missing Mix node: {node_name}", icon='ERROR')
                 continue
             row = controls.row()
             row.enabled = not node.inputs[0].is_linked
