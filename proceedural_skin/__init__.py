@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Proceedural skin",
     "author": "Proceedural skin contributors",
-    "version": (0, 3, 0),
+    "version": (0, 4, 0),
     "blender": (4, 4, 1),
     "location": "View3D > Sidebar > Proceedural skin",
     "description": "Create and apply the initial procedural skin material",
@@ -9,6 +9,8 @@ bl_info = {
 }
 
 import bpy
+import math
+from bpy.props import FloatProperty
 
 
 FACTOR_CONTROLS = (
@@ -27,9 +29,36 @@ def hex_color(value):
                  for c in channels) + (1.0,)
 
 
+def pore_size_get(material):
+    node = material.node_tree.nodes.get('Pores noise') if material.node_tree else None
+    if node is None or node.bl_idname != 'ShaderNodeTexNoise':
+        return 0.0
+    return max(0.0, min(10.0, (10000.0 - node.inputs['Scale'].default_value) / 900.0))
+
+
+def pore_size_set(material, value):
+    node = material.node_tree.nodes.get('Pores noise') if material.node_tree else None
+    if node is not None and node.bl_idname == 'ShaderNodeTexNoise':
+        # Snap typed values as well as mouse edits to half-unit steps.
+        value = math.floor(max(0.0, min(10.0, value)) * 2 + 0.5) / 2
+        node.inputs['Scale'].default_value = 10000.0 - 900.0 * value
+
+
+def upgrade_pore_range(material):
+    if material.get('proceedural_skin_version') == 3:
+        return
+    node = material.node_tree.nodes.get('Pores range')
+    if node is None or node.bl_idname != 'ShaderNodeMapRange':
+        raise ValueError('Cannot invert pores: Pores range Map Range node is missing')
+    node.inputs['To Min'].default_value = 1.0
+    node.inputs['To Max'].default_value = 0.0
+    material['proceedural_skin_version'] = 3
+
+
 def add_pore_nodes(material):
     """Upgrade our original graph once, preserving existing color factors."""
-    if material.get("proceedural_skin_version") == 2:
+    if material.get("proceedural_skin_version") in (2, 3):
+        upgrade_pore_range(material)
         return
     nodes = material.node_tree.nodes
     links = material.node_tree.links
@@ -78,13 +107,14 @@ def add_pore_nodes(material):
     links.new(mapping.outputs['Result'], bump.inputs['Height'])
     links.new(bump.outputs['Normal'], shader.inputs['Normal'])
     material['proceedural_skin_version'] = 2
+    upgrade_pore_range(material)
 
 
 def create_skin_material(material=None):
     # Reuse only our own material; never erase a user's same-named material.
-    if material is None or material.get("proceedural_skin_version") not in (1, 2):
+    if material is None or material.get("proceedural_skin_version") not in (1, 2, 3):
         material = bpy.data.materials.get("skin_Main")
-    if material is not None and material.get("proceedural_skin_version") in (1, 2):
+    if material is not None and material.get("proceedural_skin_version") in (1, 2, 3):
         add_pore_nodes(material)
         return material
     material = bpy.data.materials.new("skin_Main")
@@ -179,7 +209,7 @@ class PROCEEDURALSKIN_PT_panel(bpy.types.Panel):
         layout.label(text="View in Material Preview or Rendered mode.")
         obj = context.active_object
         material = obj.active_material if obj and obj.type == 'MESH' else None
-        if (material is None or material.get("proceedural_skin_version") not in (1, 2)
+        if (material is None or material.get("proceedural_skin_version") not in (1, 2, 3)
                 or not material.use_nodes or material.node_tree is None):
             layout.label(text="Apply skin_Main to show skin controls.")
             return
@@ -194,16 +224,30 @@ class PROCEEDURALSKIN_PT_panel(bpy.types.Panel):
             row.enabled = not node.inputs[0].is_linked
             row.prop(node.inputs[0], "default_value", text=label, slider=True)
 
+        noise = material.node_tree.nodes.get('Pores noise')
+        if noise is not None and noise.bl_idname == 'ShaderNodeTexNoise':
+            row = controls.row()
+            row.enabled = not noise.inputs['Scale'].is_linked
+            row.prop(material, 'proceedural_skin_pores_size', text='Pores size', slider=True)
+        else:
+            controls.label(text='Missing Pores noise node', icon='ERROR')
+
 
 classes = (PROCEEDURALSKIN_OT_apply, PROCEEDURALSKIN_PT_panel)
 
 
 def register():
+    bpy.types.Material.proceedural_skin_pores_size = FloatProperty(
+        name='Pores size', description='Larger pores: 0 = scale 10000, 10 = scale 1000',
+        min=0.0, max=10.0, step=50, precision=1,
+        get=pore_size_get, set=pore_size_set,
+    )
     for cls in classes:
         bpy.utils.register_class(cls)
 
 
 def unregister():
+    del bpy.types.Material.proceedural_skin_pores_size
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)
 

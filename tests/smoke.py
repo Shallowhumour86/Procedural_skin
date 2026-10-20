@@ -14,7 +14,7 @@ nodes = mat.node_tree.nodes
 assert len(nodes) == 11
 for name, value in [('Scale',10000),('Detail',1),('Roughness',1),('Lacunarity',2),('Distortion',0)]:
     assert abs(nodes['Pores noise'].inputs[name].default_value-value) < 1e-6
-for name, value in [('Value',1),('From Min',.5),('From Max',.8),('To Min',0),('To Max',1)]:
+for name, value in [('Value',1),('From Min',.5),('From Max',.8),('To Min',1),('To Max',0)]:
     assert abs(nodes['Pores range'].inputs[name].default_value-value) < 1e-6
 assert nodes['Pores strength'].data_type == 'FLOAT'
 assert nodes['Pores strength'].inputs[2].default_value == 0
@@ -64,12 +64,38 @@ class CaptureLayout:
     def row(self):
         return self
     def prop(self, data, property_name, **kwargs):
+        if kwargs['text'] == 'Pores size':
+            assert isinstance(data, bpy.types.Material) and property_name == 'proceedural_skin_pores_size'
+            assert kwargs['slider']
+            self.size_control = data
+            return
         assert property_name == 'default_value' and kwargs['slider']
         self.bindings.append((kwargs['text'], data))
 
 from types import SimpleNamespace
+# Verify inverse mapping over every half-unit step, typed snapping and RNA limits.
+prop = mat.bl_rna.properties['proceedural_skin_pores_size']
+assert prop.hard_min == 0 and prop.hard_max == 10 and prop.step == 50
+for i in range(21):
+    value = i / 2
+    mat.proceedural_skin_pores_size = value
+    assert abs(nodes['Pores noise'].inputs['Scale'].default_value - (10000-900*value)) < 1e-4
+    assert abs(mat.proceedural_skin_pores_size - value) < 1e-6
+mat.proceedural_skin_pores_size = 3.3
+assert mat.proceedural_skin_pores_size == 3.5
+nodes['Pores noise'].inputs['Scale'].default_value = 5500
+assert mat.proceedural_skin_pores_size == 5
+# A v0.3 upgrade inverts once, preserves scale/factors, and does not duplicate nodes.
+mat['proceedural_skin_version'] = 2
+nodes['Pores range'].inputs['To Min'].default_value = 0
+nodes['Pores range'].inputs['To Max'].default_value = 1
+bpy.ops.proceedural_skin.apply()
+assert nodes['Pores range'].inputs['To Min'].default_value == 1
+assert nodes['Pores range'].inputs['To Max'].default_value == 0
+assert mat.proceedural_skin_pores_size == 5 and len(nodes) == 11
 layout = CaptureLayout()
 addon.PROCEEDURALSKIN_PT_panel.draw(SimpleNamespace(layout=layout), bpy.context)
+assert layout.size_control == mat
 assert [label for label, socket in layout.bindings] == ['Intensity', 'Tone', 'Flush', 'Perfusion', 'Pores']
 for (label, socket), node_name, value in zip(layout.bindings,
         ['Final blend', 'melanin', 'Base skin', 'Blood', 'Pores strength'], [.15, .75, .35, .9, .65]):
@@ -89,7 +115,7 @@ for name in ['Pores noise','Pores range','Pores strength','Pores','Pores bump']:
 mat['proceedural_skin_version'] = 1
 mat.node_tree.links.new(nodes['Final blend'].outputs[2], shader.inputs['Base Color'])
 bpy.ops.proceedural_skin.apply()
-assert mat['proceedural_skin_version'] == 2 and len(nodes) == 11
+assert mat['proceedural_skin_version'] == 3 and len(nodes) == 11
 for name, value in zip(['Final blend','melanin','Base skin','Blood'], [.15,.75,.35,.9]):
     assert abs(nodes[name].inputs[0].default_value-value) < 1e-6
 # Zero Pores disables both the color interpolation and bump strength.
@@ -124,4 +150,4 @@ addon.PROCEEDURALSKIN_PT_panel.draw(SimpleNamespace(layout=CaptureLayout()), bpy
 bpy.context.view_layer.objects.active = None
 addon.PROCEEDURALSKIN_PT_panel.draw(SimpleNamespace(layout=CaptureLayout()), bpy.context)
 addon.unregister()
-print('PASS: registration, shader values and links, assignment, reuse, shared mesh isolation, name collision, five slider bindings and edits, preserved values, missing nodes, poll, unregister')
+print('PASS: registration, shader values and links, assignment, reuse, shared mesh isolation, name collision, six slider bindings, inverse size mapping, half steps, range inversion, migration and edits, preserved values, missing nodes, poll, unregister')
