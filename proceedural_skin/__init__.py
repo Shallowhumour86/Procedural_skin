@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Proceedural skin",
     "author": "Proceedural skin contributors",
-    "version": (0, 4, 0),
+    "version": (0, 5, 0),
     "blender": (4, 4, 1),
     "location": "View3D > Sidebar > Proceedural skin",
     "description": "Create and apply the initial procedural skin material",
@@ -10,7 +10,7 @@ bl_info = {
 
 import bpy
 import math
-from bpy.props import FloatProperty
+from bpy.props import FloatProperty, BoolProperty, PointerProperty, CollectionProperty, StringProperty
 
 
 FACTOR_CONTROLS = (
@@ -45,19 +45,29 @@ def pore_size_set(material, value):
 
 
 def upgrade_pore_range(material):
-    if material.get('proceedural_skin_version') == 3:
+    version = material.get('proceedural_skin_version', 1)
+    if version >= 4:
         return
-    node = material.node_tree.nodes.get('Pores range')
-    if node is None or node.bl_idname != 'ShaderNodeMapRange':
-        raise ValueError('Cannot invert pores: Pores range Map Range node is missing')
-    node.inputs['To Min'].default_value = 1.0
-    node.inputs['To Max'].default_value = 0.0
-    material['proceedural_skin_version'] = 3
+    nodes = material.node_tree.nodes
+    mapping = nodes.get('Pores range')
+    pores = nodes.get('Pores')
+    melanin = nodes.get('melanin')
+    final = nodes.get('Final blend')
+    if (mapping is None or mapping.bl_idname != 'ShaderNodeMapRange'
+            or pores is None or pores.bl_idname != 'ShaderNodeMix'
+            or melanin is None or final is None):
+        raise ValueError('Cannot upgrade pores: required pore or color nodes are missing')
+    if version < 3:
+        mapping.inputs['To Min'].default_value = 1.0
+        mapping.inputs['To Max'].default_value = 0.0
+    material.node_tree.links.new(melanin.outputs[2], pores.inputs[6])
+    material.node_tree.links.new(final.outputs[2], pores.inputs[7])
+    material['proceedural_skin_version'] = 4
 
 
 def add_pore_nodes(material):
     """Upgrade our original graph once, preserving existing color factors."""
-    if material.get("proceedural_skin_version") in (2, 3):
+    if material.get("proceedural_skin_version") in (2, 3, 4):
         upgrade_pore_range(material)
         return
     nodes = material.node_tree.nodes
@@ -99,8 +109,8 @@ def add_pore_nodes(material):
             n.location = (560, 260)
     links.new(noise.outputs['Fac'], mapping.inputs['Value'])
     links.new(mapping.outputs['Result'], strength.inputs[3])
-    links.new(final.outputs[2], pores.inputs[6])
-    links.new(melanin.outputs[2], pores.inputs[7])
+    links.new(final.outputs[2], pores.inputs[7])
+    links.new(melanin.outputs[2], pores.inputs[6])
     links.new(strength.outputs[0], pores.inputs[0])
     links.new(pores.outputs[2], shader.inputs['Base Color'])
     links.new(strength.outputs[0], bump.inputs['Strength'])
@@ -112,9 +122,9 @@ def add_pore_nodes(material):
 
 def create_skin_material(material=None):
     # Reuse only our own material; never erase a user's same-named material.
-    if material is None or material.get("proceedural_skin_version") not in (1, 2, 3):
+    if material is None or material.get("proceedural_skin_version") not in (1, 2, 3, 4):
         material = bpy.data.materials.get("skin_Main")
-    if material is not None and material.get("proceedural_skin_version") in (1, 2, 3):
+    if material is not None and material.get("proceedural_skin_version") in (1, 2, 3, 4):
         add_pore_nodes(material)
         return material
     material = bpy.data.materials.new("skin_Main")
@@ -175,7 +185,7 @@ class PROCEEDURALSKIN_OT_apply(bpy.types.Operator):
     def execute(self, context):
         obj = context.active_object
         try:
-            material = create_skin_material(obj.active_material)
+            material = create_skin_material(obj.proceedural_skin_main or obj.active_material)
         except ValueError as error:
             self.report({'ERROR'}, str(error))
             return {'CANCELLED'}
@@ -190,50 +200,121 @@ class PROCEEDURALSKIN_OT_apply(bpy.types.Operator):
         for face in obj.data.polygons:
             face.material_index = index
         obj.active_material_index = index
+        obj.proceedural_skin_main = material
+        group = obj.vertex_groups.get('skin_main')
+        if group is None:
+            group = obj.vertex_groups.new(name='skin_main')
+        if obj.data.vertices:
+            group.add([v.index for v in obj.data.vertices], 1.0, 'REPLACE')
         self.report({'INFO'}, f"Applied {material.name} to {obj.name}")
         return {'FINISHED'}
 
 
+class PROCEEDURALSKIN_PG_group(bpy.types.PropertyGroup):
+    group_name: StringProperty()
+    material: PointerProperty(type=bpy.types.Material)
+    expanded: BoolProperty(default=True)
+
+
+class PROCEEDURALSKIN_OT_create_group(bpy.types.Operator):
+    bl_idname = 'proceedural_skin.create_group'
+    bl_label = 'Create new skin group'
+    bl_description = 'Copy main skin settings into a new material and empty vertex group (maximum 10)'
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        obj = context.active_object
+        return (PROCEEDURALSKIN_OT_apply.poll(context)
+                and obj.proceedural_skin_main is not None
+                and len(obj.proceedural_skin_groups) < 10)
+
+    def execute(self, context):
+        obj = context.active_object
+        number = next((i for i in range(1, 11)
+                       if obj.vertex_groups.get(f'Skin_group {i}') is None
+                       and all(g.group_name != f'Skin_group {i}' for g in obj.proceedural_skin_groups)), None)
+        if number is None:
+            self.report({'WARNING'}, 'All ten skin group names are already in use')
+            return {'CANCELLED'}
+        main = obj.proceedural_skin_main
+        if not main.use_nodes or not main.node_tree:
+            self.report({'ERROR'}, 'Main skin material has no shader nodes')
+            return {'CANCELLED'}
+        # Material.copy duplicates the node tree, keeping every group independent.
+        material = main.copy()
+        material.name = f'Skin_group {number}'
+        if obj.data.users > 1:
+            obj.data = obj.data.copy()
+        group = obj.vertex_groups.new(name=f'Skin_group {number}')
+        obj.data.materials.append(material)
+        entry = obj.proceedural_skin_groups.add()
+        entry.group_name = group.name
+        entry.material = material
+        obj.vertex_groups.active_index = group.index
+        self.report({'INFO'}, f'Created {group.name}; vertices are unassigned')
+        return {'FINISHED'}
+
+
+def draw_material_controls(layout, material):
+    if (material is None or material.get('proceedural_skin_version') not in (1, 2, 3, 4)
+            or not material.use_nodes or material.node_tree is None):
+        layout.label(text='Apply skin_Main to show skin controls.')
+        return
+    controls = layout.column(align=True)
+    controls.enabled = material.is_editable and material.node_tree.is_editable
+    for label, node_name in FACTOR_CONTROLS:
+        node = material.node_tree.nodes.get(node_name)
+        if node is None or node.bl_idname != 'ShaderNodeMix' or node.data_type != ('FLOAT' if node_name == 'Pores strength' else 'RGBA'):
+            controls.label(text=f'Missing Mix node: {node_name}', icon='ERROR')
+            continue
+        row = controls.row()
+        row.enabled = not node.inputs[0].is_linked
+        row.prop(node.inputs[0], 'default_value', text=label, slider=True)
+    noise = material.node_tree.nodes.get('Pores noise')
+    if noise is not None and noise.bl_idname == 'ShaderNodeTexNoise':
+        row = controls.row()
+        row.enabled = not noise.inputs['Scale'].is_linked
+        row.prop(material, 'proceedural_skin_pores_size', text='Pores size', slider=True)
+    else:
+        controls.label(text='Missing Pores noise node', icon='ERROR')
+
+
+def draw_section(layout, owner, property_name, title, material):
+    box = layout.box()
+    expanded = getattr(owner, property_name)
+    box.prop(owner, property_name, text=title,
+             icon='TRIA_DOWN' if expanded else 'TRIA_RIGHT', emboss=False)
+    if expanded:
+        draw_material_controls(box, material)
+
+
 class PROCEEDURALSKIN_PT_panel(bpy.types.Panel):
-    bl_label = "Proceedural skin"
-    bl_idname = "PROCEEDURALSKIN_PT_panel"
+    bl_label = 'Proceedural skin'
+    bl_idname = 'PROCEEDURALSKIN_PT_panel'
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
-    bl_category = "Proceedural skin"
+    bl_category = 'Proceedural skin'
 
     def draw(self, context):
         layout = self.layout
-        layout.label(text="Select a mesh in Object Mode.")
-        layout.operator("proceedural_skin.apply", icon='MATERIAL')
-        layout.label(text="Applies to all faces of the active mesh.")
-        layout.label(text="View in Material Preview or Rendered mode.")
+        layout.label(text='Select a mesh in Object Mode.')
+        layout.operator('proceedural_skin.apply', icon='MATERIAL')
         obj = context.active_object
-        material = obj.active_material if obj and obj.type == 'MESH' else None
-        if (material is None or material.get("proceedural_skin_version") not in (1, 2, 3)
-                or not material.use_nodes or material.node_tree is None):
-            layout.label(text="Apply skin_Main to show skin controls.")
+        if obj is None or obj.type != 'MESH':
             return
-        controls = layout.column(align=True)
-        controls.enabled = material.is_editable and material.node_tree.is_editable
-        for label, node_name in FACTOR_CONTROLS:
-            node = material.node_tree.nodes.get(node_name)
-            if node is None or node.bl_idname != 'ShaderNodeMix' or node.data_type != ('FLOAT' if node_name == 'Pores strength' else 'RGBA'):
-                controls.label(text=f"Missing Mix node: {node_name}", icon='ERROR')
-                continue
-            row = controls.row()
-            row.enabled = not node.inputs[0].is_linked
-            row.prop(node.inputs[0], "default_value", text=label, slider=True)
-
-        noise = material.node_tree.nodes.get('Pores noise')
-        if noise is not None and noise.bl_idname == 'ShaderNodeTexNoise':
-            row = controls.row()
-            row.enabled = not noise.inputs['Scale'].is_linked
-            row.prop(material, 'proceedural_skin_pores_size', text='Pores size', slider=True)
-        else:
-            controls.label(text='Missing Pores noise node', icon='ERROR')
+        material = obj.proceedural_skin_main or obj.active_material
+        draw_section(layout, obj, 'proceedural_skin_main_expanded', 'Skin_main', material)
+        row = layout.row()
+        row.operator('proceedural_skin.create_group', icon='ADD')
+        layout.label(text=f'{len(obj.proceedural_skin_groups)} / 10 skin groups')
+        for entry in obj.proceedural_skin_groups:
+            draw_section(layout, entry, 'expanded', entry.group_name, entry.material)
 
 
-classes = (PROCEEDURALSKIN_OT_apply, PROCEEDURALSKIN_PT_panel)
+
+classes = (PROCEEDURALSKIN_PG_group, PROCEEDURALSKIN_OT_apply,
+           PROCEEDURALSKIN_OT_create_group, PROCEEDURALSKIN_PT_panel)
 
 
 def register():
@@ -244,9 +325,15 @@ def register():
     )
     for cls in classes:
         bpy.utils.register_class(cls)
+    bpy.types.Object.proceedural_skin_main = PointerProperty(type=bpy.types.Material)
+    bpy.types.Object.proceedural_skin_main_expanded = BoolProperty(default=True)
+    bpy.types.Object.proceedural_skin_groups = CollectionProperty(type=PROCEEDURALSKIN_PG_group)
 
 
 def unregister():
+    del bpy.types.Object.proceedural_skin_groups
+    del bpy.types.Object.proceedural_skin_main_expanded
+    del bpy.types.Object.proceedural_skin_main
     del bpy.types.Material.proceedural_skin_pores_size
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)

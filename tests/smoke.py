@@ -39,8 +39,8 @@ actual = {(l.from_node.name,l.from_socket.identifier,l.to_node.name,l.to_socket.
 expected = [(nodes['Blood'].outputs[2],nodes['Base skin'].inputs[7]),
             (nodes['Base skin'].outputs[2],nodes['Final blend'].inputs[6]),
             (nodes['melanin'].outputs[2],nodes['Final blend'].inputs[7]),
-            (nodes['Final blend'].outputs[2],nodes['Pores'].inputs[6]),
-            (nodes['melanin'].outputs[2],nodes['Pores'].inputs[7]),
+            (nodes['Final blend'].outputs[2],nodes['Pores'].inputs[7]),
+            (nodes['melanin'].outputs[2],nodes['Pores'].inputs[6]),
             (nodes['Pores noise'].outputs['Fac'],nodes['Pores range'].inputs['Value']),
             (nodes['Pores range'].outputs['Result'],nodes['Pores strength'].inputs[3]),
             (nodes['Pores strength'].outputs[0],nodes['Pores'].inputs[0]),
@@ -61,9 +61,13 @@ class CaptureLayout:
         pass
     def column(self, **kwargs):
         return self
+    def box(self):
+        return self
     def row(self):
         return self
     def prop(self, data, property_name, **kwargs):
+        if property_name in ('expanded', 'proceedural_skin_main_expanded'):
+            return
         if kwargs['text'] == 'Pores size':
             assert isinstance(data, bpy.types.Material) and property_name == 'proceedural_skin_pores_size'
             assert kwargs['slider']
@@ -93,6 +97,14 @@ bpy.ops.proceedural_skin.apply()
 assert nodes['Pores range'].inputs['To Min'].default_value == 1
 assert nodes['Pores range'].inputs['To Max'].default_value == 0
 assert mat.proceedural_skin_pores_size == 5 and len(nodes) == 11
+# Upgrade a v0.4 graph, preserving all values and swapping only color links.
+mat['proceedural_skin_version'] = 3
+mat.node_tree.links.new(nodes['Final blend'].outputs[2], nodes['Pores'].inputs[6])
+mat.node_tree.links.new(nodes['melanin'].outputs[2], nodes['Pores'].inputs[7])
+bpy.ops.proceedural_skin.apply()
+assert nodes['Pores'].inputs[6].links[0].from_node == nodes['melanin']
+assert nodes['Pores'].inputs[7].links[0].from_node == nodes['Final blend']
+assert mat.proceedural_skin_pores_size == 5 and len(nodes) == 11
 layout = CaptureLayout()
 addon.PROCEEDURALSKIN_PT_panel.draw(SimpleNamespace(layout=layout), bpy.context)
 assert layout.size_control == mat
@@ -115,7 +127,7 @@ for name in ['Pores noise','Pores range','Pores strength','Pores','Pores bump']:
 mat['proceedural_skin_version'] = 1
 mat.node_tree.links.new(nodes['Final blend'].outputs[2], shader.inputs['Base Color'])
 bpy.ops.proceedural_skin.apply()
-assert mat['proceedural_skin_version'] == 3 and len(nodes) == 11
+assert mat['proceedural_skin_version'] == 4 and len(nodes) == 11
 for name, value in zip(['Final blend','melanin','Base skin','Blood'], [.15,.75,.35,.9]):
     assert abs(nodes[name].inputs[0].default_value-value) < 1e-6
 # Zero Pores disables both the color interpolation and bump strength.
@@ -136,6 +148,7 @@ mat.name = 'Previous skin'
 user = bpy.data.materials.new('skin_Main')
 user.diffuse_color = (.1,.2,.3,1)
 obj.active_material = user
+obj.proceedural_skin_main = None
 bpy.ops.proceedural_skin.apply()
 assert obj.active_material != user
 assert tuple(user.diffuse_color)[:3] != (0,0,0)
