@@ -1,61 +1,69 @@
-# Proceedural skin — 0.6.0
+# Proceedural skin — 0.7.0
 
-A Blender 4.4.1 add-on with material creation and live skin factor controls.
+A Blender 4.4.1 add-on for procedural skin with independently adjustable, weight-painted skin regions.
 
-## Install and use
+## Install and upgrade
 
-1. In Blender, open **Edit → Preferences → Add-ons**, open the dropdown menu at the top right, and choose **Install from Disk…**.
-2. Select `proceedural_skin-0.6.0.zip` and enable **Proceedural skin** if necessary.
-3. Select a mesh in **Object Mode**. In the 3D Viewport press **N** and open the **Proceedural skin** tab.
-4. Click **Apply skin_Main**. Switch to **Material Preview** or **Rendered** shading.
-5. Adjust **Intensity**, **Tone**, **Flush**, **Perfusion**, and **Pores** in the same sidebar. The factor controls run from 0 to 1. Pores is now driven by the range node, so its manual factor control is disabled.
+Install `dist/proceedural_skin-0.7.0.zip` through **Edit → Preferences → Add-ons → Install from Disk…**, enable **Proceedural skin**, then restart Blender after upgrading an older version.
 
-| Slider | Node factor | Initial value |
+Select your mesh in Object Mode, press **N**, open **Proceedural skin**, and click **Apply skin_Main**. This upgrades the main material and every registered skin-group material, adds the weight Geometry Nodes modifier, and installs a combined display material. Existing skin settings and additional vertex-group weights are preserved. The main `skin_main` group is filled with weight 1 only on initial setup; subsequent Apply operations preserve painted main weights too.
+
+## Paint different skin types
+
+1. Click **Create new skin group**. Up to ten empty groups, `Skin_group 1` through `Skin_group 10`, are supported per object.
+2. Open its collapsible settings section and change Tone, Intensity or another setting enough to distinguish it from the main skin. New groups initially copy the main settings, so they look identical until adjusted.
+3. In **Object Data Properties → Vertex Groups**, select that group.
+4. Either select vertices in Edit Mode and click **Assign** with weight 1, or enter Weight Paint mode and paint the group.
+5. View the result in **Material Preview** or **Rendered** shading. Weight changes update live; no manual material assignment or Apply operation is needed after painting.
+
+Weight 0 reveals the underlying skin; weight 1 uses the group skin; fractional weights create smooth transitions. Transition detail depends on mesh density and weight interpolation. The main skin is the fallback everywhere additional groups have zero weight, even if `skin_main` is reduced to zero. Additional groups layer in creation order: later groups take precedence in overlapping areas. For two group weights `w1` and `w2`, the contributions are main `(1-w1)(1-w2)`, group 1 `w1(1-w2)`, and group 2 `w2`. This is layered blending, without weight normalization.
+
+## Controls and pores
+
+| Control | Node factor | Initial value |
 | --- | --- | --- |
 | Intensity | Final blend | 0.5 |
 | Tone | melanin | 0.4 |
 | Flush | Base skin | 0.2 |
 | Perfusion | Blood | 0.5 |
-| Pores | Pores strength (Float Mix) | Driven by Pores range |
+| pores colour | pores colour | 1.0 |
 
-Existing pore graphs are upgraded to **melanin → Pores A** and **Final blend → Pores B** when you click **Apply skin_Main**.
+The new Color/Mix node **pores colour** receives **Final blend → A** and **Pores → B**, then feeds Principled Base Color. Its factor is controlled by **pores colour** in each settings section: 0 removes pore color variation, and 1 preserves the previous appearance. This does not change pore bump strength.
 
-## Skin groups
+The earlier **Pores** Mix still receives **melanin → A** and **Final blend → B**. Noise → Pores range drives both Factor and B of the Float Mix **Pores strength**. That output drives Pores Factor and bump Strength; Pores range also drives bump Height. Bump Normal feeds Principled Normal.
 
-**Apply skin_Main** also creates/reuses the vertex group `skin_main` and assigns every mesh vertex to it at weight 1. Reapplying fills this group again and applies the main material to every face. It preserves additional groups and their settings.
+Noise defaults: Scale 10,000, Detail 1, Roughness 1, Lacunarity 2, Distortion 0. Map Range is inverted: From Min 0.5, From Max 0.8, To Min 1, To Max 0. **Pores size** ranges from 0 to 10 in half steps, mapping to Scale `10000 - 900 × size`. Existing scale values are preserved.
 
-The **Skin_main** section can be collapsed. **Create new skin group** adds an empty vertex group named `Skin_group 1`, then `Skin_group 2`, up to `Skin_group 10` per object. Each has a matching material slot and its own collapsible controls. Materials copy the current main material (including all shader settings) once at creation; subsequent adjustments are independent. No vertices or faces are automatically assigned to these new groups/materials.
+## How the weight system works
 
-Assign vertices manually using Blender's Vertex Groups controls or Weight Paint. To preview a group's material in this iteration, select faces in Edit Mode and assign the corresponding material slot in Material Properties. Vertex-group weights do not yet drive material blending or automatic face assignment. Smooth weighted transitions remain a future iteration. Materials may receive Blender numeric suffixes if their names already exist elsewhere.
+Each object gets a **Proceedural skin weights** Geometry Nodes modifier. Its graph reads `skin_main` and each `Skin_group #` with a **Named Attribute** node set to Float. Blender exposes vertex-group weights to this field reader. Each reader feeds a **Store Named Attribute** node set to Float / Point domain, writing `ps_weight_0`, `ps_weight_1`, and so on onto the evaluated mesh. The original mesh weights remain editable; the modifier does not apply or bake them.
 
-## Pores size
+A final **Set Material** node assigns the object's combined `… skin blend` material to the evaluated geometry. The shader reads each stored weight using an **Attribute** node's Fac output and drives a **Mix Shader** between the preceding layers and the corresponding skin shader. It mixes complete shaders, so both pore color and bump follow the painted regions. Empty or missing groups supply zero influence. No vertex or face material assignment is needed for these layers.
 
-**Pores size** runs from 0 to 10 in steps of 0.5 and controls the Pores noise Scale inversely. New materials start at 0 (Scale 10,000). Scale = 10,000 − 900 × size, so size 5 = Scale 5,500 and size 10 = Scale 1,000. The specified endpoints require a scale change of 900 per unit (450 per half step), rather than 1,000 per unit. Typed values snap to half steps too.
+Blender materials cannot directly reference other materials as shader inputs. Therefore each source material's generated graph is placed inside a reusable **Skin shader** node group. Its source material and the combined material reference the same shader group, so sidebar edits update the displayed skin immediately. Each additional skin group's shader node tree is copied independently at creation. To inspect the original nodes in the Shader Editor, open a source material and enter its **Skin shader** group with Tab.
 
-The slider reads the actual noise scale, so Shader Editor changes are reflected in the panel. Existing noise scale is preserved during upgrade. A linked Scale socket disables the slider. To upgrade an existing material, click **Apply skin_Main** once; the pore range becomes inverted without resetting color factors, pore strength or noise scale.
+Only Apply and Create new skin group rebuild the generated Geometry Nodes and combined-material graphs. Painting is evaluated directly by Blender: no timer, update handler, baking, or dependency on a Python callback is needed for rendering. Existing source material slots are retained, but the modifier controls the displayed material. Disabling the modifier shows the underlying face assignments.
 
-## Pores
+The modifier is added at the end of the current stack. Later modifiers must preserve the named attributes; topology-changing modifiers may change weight interpolation. Keep vertex-group names unchanged after setup. If you alter group structure, return to Object Mode and click Apply to rebuild. The generated modifier and combined material are managed by the add-on and rebuilt on Apply, so edit the source Skin shader groups rather than those generated graphs.
 
-The pore Noise Texture uses Scale 10,000, Detail 1, Roughness 1, Lacunarity 2 and Distortion 0. Its factor feeds a Map Range with Value 1 (overridden by the connected noise), From Min 0.5, From Max 0.8, To Min 1 and To Max 0 (inverted).
+## Research references
 
-The map drives both input B and Factor of the Float Mix **Pores strength**, with A = 0. The **Pores** slider is disabled because Factor is connected to Pores range. The existing connections to B and bump Height remain. Its result drives both the factor of the **Pores** color Mix (A: melanin / B: Final blend) and bump strength. Map Range also drives bump height; bump normal feeds the Principled normal input. Other new-node settings retain Blender defaults.
+Implementation was checked against Blender's official **v4.4.1** source (the online manual was blocked in the setup environment):
 
-After upgrading, select your existing skin object and click **Apply skin_Main** once to upgrade the main pore graph and every registered skin group material. Existing color factors are preserved. Reapplying preserves pore edits too. **Perfusion** is the renamed Blush control; it keeps the existing Blood factor.
-
-Controls follow the active material and also work with skin materials saved by earlier versions. Changes in the Shader Editor appear in the sliders automatically. Objects using the same skin material share these adjustments. A factor driven by a node link is disabled in the panel.
-
-To upgrade, install the new ZIP and restart Blender if the previous version remains loaded. Existing material values are preserved.
-
-The material uses Random Walk (Skin) subsurface scattering with weight 1. The supplied hex colors are converted from sRGB into Blender's linear color values. It applies to all faces of the active mesh and supports Undo. Other material slots are retained. Reapplying reuses the add-on's material and preserves subsequent shader edits. Objects sharing geometry are isolated before assigning skin.
-
-If an unrelated `skin_Main` already exists, Blender gives the new material a suffix (such as `.001`) to preserve your material. Rename the unrelated material first if the exact name is required.
-
-Weight paints, skin regions, vessels, transition controls, and baking are future iterations.
+- [Named Attribute geometry node](https://github.com/blender/blender/blob/v4.4.1/source/blender/nodes/geometry/nodes/node_geo_input_named_attribute.cc): reads named float fields.
+- [Store Named Attribute geometry node](https://github.com/blender/blender/blob/v4.4.1/source/blender/nodes/geometry/nodes/node_geo_store_named_attribute.cc): stores fields on a selected geometry domain.
+- [Attribute shader node](https://github.com/blender/blender/blob/v4.4.1/source/blender/nodes/shader/nodes/node_shader_attribute.cc): retrieves geometry attributes in shading.
 
 ## Validation
 
-Run `blender --background --factory-startup --python-exit-code 1 --python tests/smoke.py` from this repository. This validates registration, exact node settings and connections, assignment, repeated application, shared mesh isolation, existing material preservation, all six slider bindings and value changes, inverse pore size mapping, half-step snapping, version upgrades, and missing-node handling. Checks have passed in Blender 4.3.2; exact Blender 4.4.1 validation is left for manual testing.
+Run from the repository root:
 
-Group validation: `blender --background --factory-startup --python-exit-code 1 --python tests/groups.py` verifies full main weights, empty groups, ten-group limit, independent materials, collapsible controls, reapplication, and save/reopen persistence.
+```sh
+blender --background --factory-startup --python-exit-code 1 --python tests/smoke.py
+blender --background --factory-startup --python-exit-code 1 --python tests/groups.py
+blender --background --factory-startup --python-exit-code 1 --python tests/weights.py
+```
 
-Version 0.6.0 validation checks the new Factor connection on the main material and all ten group materials, including migration from v0.5.0. As before, Apply assigns the main material to all faces; group materials remain available for manual face assignment.
+Checks cover shader defaults and connections, pores colour, half-step size mapping, migration, repeatability, all ten independent groups, collapsible controls, and save/reopen persistence. Weight checks inspect actual evaluated Point/Float attributes and exercise Edit Mode vertex assignment and CPU-render distinct test shaders at weights 0, 0.5 and 1, plus overlapping groups. Tests run on the available Blender 4.3.2; exact 4.4.1 validation remains for manual testing.
+
+Vessels, additional skin controls, and texture baking remain future iterations.
